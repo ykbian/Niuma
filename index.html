@@ -104,13 +104,18 @@ const ET={
 function powerRatio(){return (P.atk/4)*P.frMul*Math.pow(P.shots,0.7);}   // 火力倍率（弹道收益递减）
 function spawnCluster(lane,k,nOverride){
   if(lane===undefined)lane=Math.random()<0.5?0:1;
-  if(!k){const r=Math.random();k=r<0.45?'daily':r<0.7?'weekly':r<0.88?'meeting':'bug';}
+  if(!k){
+    const r=Math.random();
+    const bp=Math.min(0.30,0.10+0.03*(G.day-1));        // Bug 突袭随天数变多
+    const mp=Math.min(0.34,0.18+0.02*(G.day-1));        // 会议怪（远程）也变多
+    k=r<bp?'bug':r<bp+mp?'meeting':r<bp+mp+0.25?'weekly':'daily';
+  }
   const t=ET[k];
   const cols=k==='bug'?2:4;                            // 4 列，塞满整条过道
-  const n=nOverride||(k==='bug'?4:8+Math.min(8,2*(G.day-1)+Math.floor(G.time/25)*2));
+  const n=nOverride||(k==='bug'?4:8+Math.min(12,(G.day-1)+Math.floor(G.time/20)*2));
   const colW=laneW(lane)/cols;
-  const spd=t.spd*(0.95+Math.random()*0.1)*(1+0.06*(G.day-1));
-  const hpm=(0.6+0.33*powerRatio())*(1+0.08*(G.day-1)); // 血量跟随火力，清一面墙耗时基本恒定
+  const spd=t.spd*(0.95+Math.random()*0.1)*Math.min(1.9,1+0.10*(G.day-1));
+  const hpm=(0.6+0.33*powerRatio())*(1+0.08*(G.day-1)); // 血量跟随火力+天数，难度逐日上压
   for(let i=0;i<n;i++){
     const c=i%cols,row=Math.floor(i/cols);
     enemies.push({k,e:t.e,n:t.n,lane,
@@ -122,12 +127,27 @@ function spawnCluster(lane,k,nOverride){
 }
 
 /* ============ 充能门（射击提升数值） ============ */
-function addStress(v){P.stress=Math.max(0,Math.min(100,P.stress+v));}
+function addStress(v){
+  if(v>0&&P.breakT>0)return;                 // 发疯期间不重复充能
+  P.stress=Math.max(0,Math.min(100,P.stress+v));
+}
+function hurt(v,label){                       // 精神=血条，挨打直接掉
+  if(P.inv>0||P.breakT>0)return;
+  P.mental=Math.max(0,P.mental-v);P.inv=1.0;G.shake=7;G.flash=0.25;
+  ftext(P.x,P.y-50,label+' -'+v,'#ff8a65');
+  snd(220,0.12,'sawtooth',0.05);
+}
+function triggerBreak(){                      // 压力攒满，主动发疯
+  if(P.stress<100||P.breakT>0)return;
+  P.breakT=8;G.shake=12;
+  ftext(P.x,P.y-70,'💢 发疯模式!!','#ff1744',true);
+  snd(120,0.6,'sawtooth',0.08,500);
+}
 const GKINDS=[
   {kind:'atk', name:'ChatGPT辅助', base:2, inc:1, cap:12, fmt:v=>'攻击 +'+v},
   {kind:'fr',  name:'咖啡因',      base:8, inc:1, cap:30, fmt:v=>'射速 +'+v+'%'},
   {kind:'shot',name:'外接大屏',    base:0, inc:0, cap:0,  fmt:v=>'弹道 +1'},
-  {kind:'calm',name:'摸鱼时刻',    base:15,inc:1, cap:40, fmt:v=>'压力 -'+v},
+  {kind:'calm',name:'摸鱼时刻',    base:12,inc:1, cap:30, fmt:v=>'精神 +'+v},
   {kind:'coin',name:'加班费',      base:40,inc:5, cap:240,fmt:v=>'金币 +'+v},
 ];
 function spawnGatePair(){
@@ -137,20 +157,26 @@ function spawnGatePair(){
   const mk=(lane,t)=>({lane,y:-50,h:46,spd:75,val:t.base,bad:false,t});
   const g0=mk(0,a);
   let g1;
-  if(Math.random()<0.25){                       // 25% 一侧是要躲开的坏门
-    g1={lane:1,y:-50,h:46,spd:75,val:15,bad:true,
-        t:{kind:'bad',name:'老板巡视',fmt:v=>'压力 +'+v}};
+  if(Math.random()<Math.min(0.45,0.25+0.04*(G.day-1))){   // 坏门概率随天数上升
+    g1={lane:1,y:-50,h:46,spd:75,val:12,bad:true,
+        t:{kind:'bad',name:'老板巡视',fmt:v=>'精神 -'+v}};
   }else g1=mk(1,b);
   if(Math.random()<0.5){g0.lane=1;g1.lane=0;}   // 随机左右
   gates.push(g0,g1);
 }
 function applyGate(g){
   const t=g.t;
-  if(g.bad){addStress(g.val);ftext(P.x,P.y-66,'老板巡视：压力 +'+g.val,'#ff5252',true);snd(180,0.3,'sawtooth',0.06);return;}
+  if(g.bad){
+    P.mental=Math.max(0,P.mental-g.val);
+    ftext(P.x,P.y-66,'老板巡视：精神 -'+g.val,'#ff5252',true);
+    snd(180,0.3,'sawtooth',0.06);
+    if(P.mental<=0)gameOver('quit');
+    return;
+  }
   if(t.kind==='atk')P.atk+=g.val;
   else if(t.kind==='fr')P.frMul=Math.min(3,P.frMul*(1+g.val/100));
   else if(t.kind==='shot')P.shots=Math.min(8,P.shots+1);
-  else if(t.kind==='calm')addStress(-g.val);
+  else if(t.kind==='calm')P.mental=Math.min(100,P.mental+g.val);
   else if(t.kind==='coin')P.coins+=g.val;
   ftext(P.x,P.y-66,t.name+'：'+t.fmt(g.val),'#80d8ff',true);
   snd(880,0.15,'sine',0.05,1320);
@@ -186,9 +212,9 @@ function gameOver(reason,name){
 /* ============ Boss：巨型周会主持人，缓慢推进 ============ */
 function spawnBoss(){
   const dps=8*P.frMul*P.atk*P.shots*0.75;              // 估算当前实际 DPS
-  const hp=Math.max(1200,dps*13)*(1+0.12*(G.day-1));   // Boss 大约扛 20~30 秒火力
+  const hp=Math.max(1200,dps*13)*(1+0.2*(G.day-1));    // Boss 大约扛 20~30 秒火力，逐日更硬
   boss={x:W/2,y:-80,hp,max:hp,t:0,fanT:3,entry:true,
-    spd:11+1.5*(G.day-1),n:'周会主持人',e:'👨‍💼'};
+    spd:11+1.5*(G.day-1),n:'周会主持人',e:'🤵'};
 }
 
 /* ============ 输入 ============ */
@@ -201,7 +227,10 @@ function ptrY(e){const r=cv.getBoundingClientRect();return (e.clientY-r.top)*H/r
 cv.addEventListener('pointerdown',e=>{
   ptrDown=true;
   const x=ptrX(e),y=ptrY(e);
-  if(G.screen==='playing'){P.lane=x<W/2?0:1;return;}
+  if(G.screen==='playing'){
+    if(P.stress>=100&&P.breakT<=0&&x>W/2-66&&x<W/2+66&&y>H-76&&y<H-24){triggerBreak();return;}
+    P.lane=x<W/2?0:1;return;
+  }
   const b=G.btn;
   if(b&&x>b.x&&x<b.x+b.w&&y>b.y&&y<b.y+b.h){
     snd(660,0.1,'square',0.05);
@@ -238,19 +267,14 @@ function update(dt){
   G.danger=danger;
   if(P.breakT>0){
     P.breakT-=dt;
-    if(P.breakT<=0){
-      P.stress=0;P.mental-=15;P.weakT=2.5;
-      ftext(P.x,P.y-60,'精神 -15','#ef5350',true);
-      snd(300,0.4,'sine',0.05,80);
-      if(P.mental<=0){P.mental=0;gameOver('quit');return;}
+    if(P.breakT<=0){                          // 发疯结束：发泄完反而舒服了
+      P.stress=0;P.weakT=1.2;
+      P.mental=Math.min(100,P.mental+8);
+      ftext(P.x,P.y-60,'发泄一通，舒服多了 精神+8','#80cbc4');
     }
   }else{
-    addStress((0.3+1.8*danger*danger)*dt*(1+0.05*(G.day-1)));
-    if(P.stress>=100){
-      P.breakT=8;G.shake=12;
-      ftext(P.x,P.y-70,'💢 崩溃模式!!','#ff1744',true);
-      snd(120,0.6,'sawtooth',0.08,500);
-    }
+    addStress((0.3+0.9*danger)*dt);           // 工作逼近时被动积压
+    if(keys[' ']||keys.Spacebar)triggerBreak();
   }
 
   /* --- 自动射击 --- */
@@ -275,7 +299,7 @@ function update(dt){
   if(G.phase==='wave'){
     G.spawnT-=dt;
     if(G.spawnT<=0){
-      G.spawnT=Math.max(3.8,6.2-G.day*0.25-G.time*0.010);
+      G.spawnT=Math.max(Math.max(2.4,3.8-0.12*(G.day-1)),6.2-G.day*0.35-G.time*0.010);
       spawnCluster();
     }
     G.gateT-=dt;
@@ -301,7 +325,7 @@ function update(dt){
     if(e.shootT>0){
       e.shootT-=dt;
       if(e.shootT<=0){
-        e.shootT=3;
+        e.shootT=4;
         const a=Math.atan2(P.y-e.y,P.x-e.x);
         eb.push({x:e.x,y:e.y,vx:Math.cos(a)*140,vy:Math.sin(a)*140,e:'📩'});
       }
@@ -321,9 +345,9 @@ function update(dt){
     const enrage=boss.hp<boss.max*0.5;
     boss.fanT-=dt;
     if(boss.fanT<=0){
-      boss.fanT=enrage?1.6:2.4;
+      boss.fanT=(enrage?1.6:2.4)*Math.max(0.6,1-0.05*(G.day-1));
       const base=Math.atan2(P.y-boss.y,P.x-boss.x);
-      const cnt=enrage?7:5;
+      const cnt=(enrage?7:5)+Math.min(4,Math.floor((G.day-1)/2));
       for(let i=0;i<cnt;i++){
         const a=base-0.5+i*(1.0/(cnt-1));
         eb.push({x:boss.x,y:boss.y+30,vx:Math.cos(a)*160,vy:Math.sin(a)*160,e:'❓'});
@@ -370,6 +394,7 @@ function update(dt){
         e.y-=4;                                       // 命中击退，火力能“顶住”推线
         if(e.hp<=0){
           G.killsDay++;G.killsTotal++;P.coins+=e.coin;
+          addStress(2.2);                     // 击杀攒压力（大招能量）
           burst(e.x,e.y,'#ffca28',5);
           snd(500,0.06,'square',0.025,200);
         }
@@ -379,7 +404,7 @@ function update(dt){
     if(!b.dead&&boss){
       const dx=b.x-boss.x,dy=b.y-boss.y;
       if(dx*dx+dy*dy<46*46){
-        boss.hp-=b.dmg;b.dead=true;boss.y-=0.7;
+        boss.hp-=b.dmg;b.dead=true;boss.y-=0.7;addStress(0.12);
         if(boss.hp<=0){
           burst(boss.x,boss.y,'#ff7043',24);
           P.coins+=200;G.killsDay++;G.killsTotal++;
@@ -399,14 +424,11 @@ function update(dt){
     const dx=b.x-P.x,dy=b.y-P.y;
     if(dx*dx+dy*dy<22*22){
       b.dead=true;
-      if(P.inv<=0&&P.breakT<=0){
-        addStress(10);P.inv=0.7;G.shake=7;G.flash=0.25;
-        ftext(P.x,P.y-50,'压力 +10','#ff8a65');
-        snd(220,0.12,'sawtooth',0.05);
-      }
+      hurt(5,'精神');
     }
   }
   eb=eb.filter(b=>!b.dead&&b.y<H+30&&b.y>-30&&b.x>-30&&b.x<W+30);
+  if(P.mental<=0){gameOver('quit');return;}
 
   /* --- 粒子 / 文字 --- */
   for(const p of fx){p.x+=p.vx*dt;p.y+=p.vy*dt;p.t-=dt;}
@@ -508,7 +530,7 @@ function drawGame(){
 
   /* 玩家 */
   const blink=P.inv>0&&Math.floor(P.inv*12)%2===0;
-  if(!blink)emoji(P.breakT>0?'🤬':(P.weakT>0?'😵':'🧑‍💻'),P.x,P.y,46);
+  if(!blink)emoji(P.breakT>0?'🤬':(P.weakT>0?'😵':'🐂'),P.x,P.y,46);
   txt(weaponName(),P.x,P.y+34,11,'rgba(255,255,255,0.6)');
 
   /* 粒子 / 浮字 */
@@ -525,7 +547,8 @@ function drawGame(){
 
   /* Boss 出场提示 */
   if(G.phase==='bossintro'){
-    txt('⚠️ 周会主持人 来了 ⚠️',W/2,H*0.4,24,'#ff7043','center',true);
+    emoji('⚠️',W/2-130,H*0.4,24);emoji('⚠️',W/2+130,H*0.4,24);
+    txt('周会主持人 来了',W/2,H*0.4,24,'#ff7043','center',true);
     txt('技能：疯狂提问 · 缓慢但不可阻挡地逼近',W/2,H*0.4+32,14,'#ffab91');
   }
 
@@ -533,10 +556,18 @@ function drawGame(){
   if(P.breakT>0){
     ctx.fillStyle='rgba(255,23,68,'+(0.12+0.06*Math.sin(G.time*20))+')';
     ctx.fillRect(0,0,W,H);
-    txt('💢 崩溃模式 '+P.breakT.toFixed(1)+'s',W/2,H-200,20,'#ff1744','center',true);
+    txt('💢 发疯模式 '+P.breakT.toFixed(1)+'s',W/2,H-200,20,'#ff1744','center',true);
   }else if(P.weakT>0){
     ctx.fillStyle='rgba(120,130,150,0.18)';ctx.fillRect(0,0,W,H);
-    txt('虚脱中…',W/2,H-200,15,'#b0bec5');
+    txt('喘口气…',W/2,H-200,15,'#b0bec5');
+  }
+  /* 发疯按钮：压力攒满时出现 */
+  if(P.stress>=100&&P.breakT<=0){
+    ctx.globalAlpha=0.75+0.25*Math.sin(G.time*9);
+    ctx.fillStyle='#ff1744';rrect(W/2-66,H-76,132,52,14);ctx.fill();
+    ctx.globalAlpha=1;
+    txt('💢 发疯',W/2,H-55,19,'#fff','center',true);
+    txt('压力爆表！点击释放',W/2,H-32,10,'#ffcdd2');
   }
   if(G.flash>0){
     ctx.fillStyle='rgba(255,82,82,'+G.flash*0.6+')';ctx.fillRect(0,0,W,H);
@@ -557,7 +588,7 @@ function drawGame(){
   if(G.hintT>0){
     ctx.globalAlpha=Math.min(1,G.hintT);
     txt('← 点击左右半屏 / 方向键 切换工位 →',W/2,H-52,14,'#eceff1');
-    txt('子弹打蓝门可以充能，数值越打越高！红门快躲开',W/2,H-30,12,'#90a4ae');
+    txt('蓝门越打越强，红门掉精神，压力满了按钮发疯',W/2,H-30,12,'#90a4ae');
     ctx.globalAlpha=1;
   }
 }
@@ -567,7 +598,7 @@ function drawMenu(){
   emoji('🧑‍💻',W/2,140,72);
   txt('牛马生存模拟器',W/2,230,34,'#ffffff','center',true);
   txt('—— 无限增长科技有限公司 欢迎你 ——',W/2,270,14,'#90a4ae');
-  const lines=['🛣️ 两条过道，工作大军压境','🔫 火力顶住推进的日报周报','🚪 子弹打门充能，数值越打越高','💢 工作逼近压力暴涨，满格即崩溃','🧹 打完Boss，整理工位回血'];
+  const lines=['🛣️ 两条工位，工作大军压境','📩 被邮件砸中掉精神，归零=提桶跑路','💢 击杀攒压力，攒满点按钮发疯','🚪 子弹打蓝门充能，红门千万别碰','🧹 打完Boss，整理工位回精神'];
   lines.forEach((s,i)=>txt(s,W/2,340+i*34,15,'#cfd8dc'));
   button('🕘 打卡上班',556);
   txt('入职职位：实习生',W/2,636,13,'#78909c');
@@ -622,7 +653,7 @@ let cTimer=null,cPlaced=0;
 function startCleanup(){
   G.screen='cleanup';
   deskEl.innerHTML='';slotsEl.innerHTML='';cPlaced=0;
-  cstatsEl.textContent='压力 '+Math.round(P.stress)+' · 精神 '+Math.round(P.mental);
+  cstatsEl.textContent='当前精神 '+Math.round(P.mental)+' · 每归位一件 +10';
   CITEMS.forEach((it,i)=>{
     const slot=document.createElement('div');
     slot.className='slot';slot.dataset.i=i;
@@ -666,8 +697,8 @@ function placeItem(el,slot){
   el.style.left=(sr.left-dr.left+sr.width/2-19)+'px';
   el.style.top=(sr.top-dr.top+sr.height/2-19)+'px';
   slot.classList.add('ok');
-  addStress(-10);P.mental=Math.min(100,P.mental+10);P.coins+=25;
-  cstatsEl.textContent='压力 -10 · 精神 +10 · 💰+25　（压力 '+Math.round(P.stress)+' / 精神 '+Math.round(P.mental)+'）';
+  P.mental=Math.min(100,P.mental+10);P.coins+=25;
+  cstatsEl.textContent='精神 +10 · 💰+25　（精神 '+Math.round(P.mental)+'）';
   snd(700+cPlaced*80,0.12,'sine',0.05);
   cPlaced++;
   if(cPlaced>=CITEMS.length){
